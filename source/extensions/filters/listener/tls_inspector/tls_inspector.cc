@@ -16,7 +16,8 @@
 
 #include "extensions/transport_sockets/well_known_names.h"
 
-#include "openssl/bytestring.h"
+//FIXME (Doesn't exist in OpenSSL)
+//#include "openssl/bytestring.h"
 #include "openssl/ssl.h"
 
 namespace Envoy {
@@ -26,7 +27,8 @@ namespace TlsInspector {
 
 Config::Config(Stats::Scope& scope, uint32_t max_client_hello_size)
     : stats_{ALL_TLS_INSPECTOR_STATS(POOL_COUNTER_PREFIX(scope, "tls_inspector."))},
-      ssl_ctx_(SSL_CTX_new(TLS_with_buffers_method())),
+      //FIXME: Original code calls TLS_with_buffers_method(), which doesn't exist in OpenSSL
+      ssl_ctx_(SSL_CTX_new(TLS_method())),
       max_client_hello_size_(max_client_hello_size) {
 
   if (max_client_hello_size_ > TLS_MAX_CLIENT_HELLO) {
@@ -36,26 +38,29 @@ Config::Config(Stats::Scope& scope, uint32_t max_client_hello_size)
 
   SSL_CTX_set_options(ssl_ctx_.get(), SSL_OP_NO_TICKET);
   SSL_CTX_set_session_cache_mode(ssl_ctx_.get(), SSL_SESS_CACHE_OFF);
-  SSL_CTX_set_select_certificate_cb(
-      ssl_ctx_.get(), [](const SSL_CLIENT_HELLO* client_hello) -> ssl_select_cert_result_t {
-        const uint8_t* data;
-        size_t len;
-        if (SSL_early_callback_ctx_extension_get(
-                client_hello, TLSEXT_TYPE_application_layer_protocol_negotiation, &data, &len)) {
-          Filter* filter = static_cast<Filter*>(SSL_get_app_data(client_hello->ssl));
-          filter->onALPN(data, len);
-        }
-        return ssl_select_cert_success;
-      });
-  SSL_CTX_set_tlsext_servername_callback(
-      ssl_ctx_.get(), [](SSL* ssl, int* out_alert, void*) -> int {
-        Filter* filter = static_cast<Filter*>(SSL_get_app_data(ssl));
-        filter->onServername(SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name));
+  //FIXME: Reimplement this (SSL_CLIENT_HELLO Doesn't exist in OpenSSL)
+  // SSL_CTX_set_select_certificate_cb(
+  //     ssl_ctx_.get(), [](const SSL_CLIENT_HELLO* client_hello) -> ssl_select_cert_result_t {
+  //       const uint8_t* data;
+  //       size_t len;
+  //       if (SSL_early_callback_ctx_extension_get(
+  //               client_hello, TLSEXT_TYPE_application_layer_protocol_negotiation, &data, &len)) {
+  //         Filter* filter = static_cast<Filter*>(SSL_get_app_data(client_hello->ssl));
+  //         filter->onALPN(data, len);
+  //       }
+  //       return ssl_select_cert_success;
+  //     });
+  SSL_CTX_set_tlsext_servername_callback(ssl_ctx_.get(), &Config::tlsext_servername_callback);
+}
 
-        // Return an error to stop the handshake; we have what we wanted already.
-        *out_alert = SSL_AD_USER_CANCELLED;
-        return SSL_TLSEXT_ERR_ALERT_FATAL;
-      });
+int Config::tlsext_servername_callback(SSL *ssl, void *args) {
+    Filter* filter = static_cast<Filter*>(SSL_get_app_data(ssl));
+    filter->onServername(SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name));
+
+    // Return an error to stop the handshake; we have what we wanted already.
+    // FIXME: This argument doesn't exist in OpenSSL
+    //*out_alert = SSL_AD_USER_CANCELLED;
+    return SSL_TLSEXT_ERR_ALERT_FATAL;
 }
 
 bssl::UniquePtr<SSL> Config::newSsl() { return bssl::UniquePtr<SSL>{SSL_new(ssl_ctx_.get())}; }
@@ -99,24 +104,25 @@ Network::FilterStatus Filter::onAccept(Network::ListenerFilterCallbacks& cb) {
   return Network::FilterStatus::StopIteration;
 }
 
+//FIXME: Reimplement this (Relies on bytestring.h which doesn't exist in OpenSSL)
 void Filter::onALPN(const unsigned char* data, unsigned int len) {
-  CBS wire, list;
-  CBS_init(&wire, reinterpret_cast<const uint8_t*>(data), static_cast<size_t>(len));
-  if (!CBS_get_u16_length_prefixed(&wire, &list) || CBS_len(&wire) != 0 || CBS_len(&list) < 2) {
-    // Don't produce errors, let the real TLS stack do it.
-    return;
-  }
-  CBS name;
-  std::vector<absl::string_view> protocols;
-  while (CBS_len(&list) > 0) {
-    if (!CBS_get_u8_length_prefixed(&list, &name) || CBS_len(&name) == 0) {
-      // Don't produce errors, let the real TLS stack do it.
-      return;
-    }
-    protocols.emplace_back(reinterpret_cast<const char*>(CBS_data(&name)), CBS_len(&name));
-  }
-  cb_->socket().setRequestedApplicationProtocols(protocols);
-  alpn_found_ = true;
+  // CBS wire, list;
+  // CBS_init(&wire, reinterpret_cast<const uint8_t*>(data), static_cast<size_t>(len));
+  // if (!CBS_get_u16_length_prefixed(&wire, &list) || CBS_len(&wire) != 0 || CBS_len(&list) < 2) {
+  //   // Don't produce errors, let the real TLS stack do it.
+  //   return;
+  // }
+  // CBS name;
+  // std::vector<absl::string_view> protocols;
+  // while (CBS_len(&list) > 0) {
+  //   if (!CBS_get_u8_length_prefixed(&list, &name) || CBS_len(&name) == 0) {
+  //     // Don't produce errors, let the real TLS stack do it.
+  //     return;
+  //   }
+  //   protocols.emplace_back(reinterpret_cast<const char*>(CBS_data(&name)), CBS_len(&name));
+  // }
+  // cb_->socket().setRequestedApplicationProtocols(protocols);
+  // alpn_found_ = true;
 }
 
 void Filter::onServername(absl::string_view name) {

@@ -1,9 +1,4 @@
 REPOSITORY_LOCATIONS = dict(
-    boringssl = dict(
-        # Use commits from branch "chromium-stable-with-bazel"
-        commit = "372daf7042ffe3da1335743e7c93d78f1399aba7",  # chromium-68.0.3440.75
-        remote = "https://github.com/google/boringssl",
-    ),
     com_google_absl = dict(
         commit = "92020a042c0cd46979db9f6f0cb32783dc07765e",  # 2018-06-08
         remote = "https://github.com/abseil/abseil-cpp",
@@ -64,8 +59,10 @@ REPOSITORY_LOCATIONS = dict(
         remote = "https://github.com/google/googleapis",
     ),
     com_github_google_jwt_verify = dict(
-        commit = "4eb9e96485b71e00d43acc7207501caafb085b4a",
-        remote = "https://github.com/google/jwt_verify_lib",
+#        commit = "4eb9e96485b71e00d43acc7207501caafb085b4a",
+#        remote = "https://github.com/google/jwt_verify_lib",
+       commit = "openssl",
+       remote = "https://github.com/bdecoste/jwt_verify_lib",
     ),
     com_github_nodejs_http_parser = dict(
         # 2018-07-20 snapshot to pick up:

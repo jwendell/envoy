@@ -130,7 +130,7 @@ unsigned ContextConfigImpl::tlsVersionFromProto(
   case envoy::api::v2::auth::TlsParameters::TLSv1_2:
     return TLS1_2_VERSION;
   case envoy::api::v2::auth::TlsParameters::TLSv1_3:
-    return TLS1_3_VERSION;
+    return TLS1_2_VERSION; // FIXME: Is this safe? (Original code was TLS1_3_VERSION)
   default:
     NOT_IMPLEMENTED_GCOVR_EXCL_LINE;
   }

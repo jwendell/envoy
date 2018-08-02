@@ -6,8 +6,10 @@
 #include "envoy/stats/stats_macros.h"
 
 #include "common/common/logger.h"
+#include "common/ssl/bssl_wrapper.h"
 
-#include "openssl/bytestring.h"
+//FIXME (Doesn't exist in OpenSSL)
+//#include "openssl/bytestring.h"
 #include "openssl/ssl.h"
 
 namespace Envoy {
@@ -54,6 +56,8 @@ private:
   TlsInspectorStats stats_;
   bssl::UniquePtr<SSL_CTX> ssl_ctx_;
   const uint32_t max_client_hello_size_;
+
+  int tlsext_servername_callback(SSL *ssl, void *args);
 };
 
 typedef std::shared_ptr<Config> ConfigSharedPtr;

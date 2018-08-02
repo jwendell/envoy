@@ -345,7 +345,7 @@ std::string SslSocket::serialNumberPeerCertificate() const {
   if (!cert) {
     return "";
   }
-  return Utility::getSerialNumberFromCertificate(*cert.get());
+  return Utility::getSerialNumberFromCertificate(cert.get());
 }
 
 std::string SslSocket::getSubjectFromCertificate(X509* cert) const {

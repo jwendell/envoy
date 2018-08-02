@@ -1,3 +1,5 @@
+#define OPENSSL_IS_BORINGSSL
+
 #pragma once
 
 #include <string>
@@ -9,6 +11,7 @@
 #include "envoy/stats/stats.h"
 #include "envoy/stats/stats_macros.h"
 
+#include "common/ssl/bssl_wrapper.h"
 #include "common/ssl/context_impl.h"
 #include "common/ssl/context_manager_impl.h"
 
@@ -160,6 +163,8 @@ private:
   int sessionTicketProcess(SSL* ssl, uint8_t* key_name, uint8_t* iv, EVP_CIPHER_CTX* ctx,
                            HMAC_CTX* hmac_ctx, int encrypt);
 
+  int ssl_tlsext_ticket_key_cb(SSL* ssl, uint8_t* key_name, uint8_t* iv, EVP_CIPHER_CTX* ctx, HMAC_CTX* hmac_ctx, int encrypt);
+  
   Runtime::Loader& runtime_;
   std::vector<uint8_t> parsed_alt_alpn_protocols_;
   const std::vector<ServerContextConfig::SessionTicketKey> session_ticket_keys_;
