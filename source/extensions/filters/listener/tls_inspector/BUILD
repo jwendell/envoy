@@ -15,8 +15,8 @@ envoy_cc_library(
     name = "tls_inspector_lib",
     srcs = ["tls_inspector.cc"],
     hdrs = ["tls_inspector.h"],
-    external_deps = ["ssl"],
     deps = [
+        "@openssl_crypto//:openssl-lib",
         "//include/envoy/event:dispatcher_interface",
         "//include/envoy/event:timer_interface",
         "//include/envoy/network:filter_interface",

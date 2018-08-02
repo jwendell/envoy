@@ -12,8 +12,8 @@ envoy_cc_library(
     name = "ssl_socket_lib",
     srcs = ["ssl_socket.cc"],
     hdrs = ["ssl_socket.h"],
-    external_deps = ["ssl"],
     deps = [
+        "@openssl_crypto//:openssl-lib",
         ":context_config_lib",
         ":context_lib",
         ":utility_lib",
@@ -30,10 +30,8 @@ envoy_cc_library(
     name = "context_config_lib",
     srcs = ["context_config_impl.cc"],
     hdrs = ["context_config_impl.h"],
-    external_deps = [
-        "ssl",
-    ],
     deps = [
+        "@openssl_crypto//:openssl-lib",
         "//include/envoy/secret:secret_manager_interface",
         "//include/envoy/ssl:context_config_interface",
         "//source/common/common:assert_lib",
@@ -56,8 +54,8 @@ envoy_cc_library(
         "context_impl.h",
         "context_manager_impl.h",
     ],
-    external_deps = ["ssl"],
     deps = [
+         "@openssl_crypto//:openssl-lib",
         ":utility_lib",
         "//include/envoy/runtime:runtime_interface",
         "//include/envoy/ssl:context_config_interface",
@@ -86,7 +84,7 @@ envoy_cc_library(
     name = "utility_lib",
     srcs = ["utility.cc"],
     hdrs = ["utility.h"],
-    external_deps = [
-        "ssl",
+    deps = [
+         "@openssl_crypto//:openssl-lib",
     ],
 )

@@ -14,7 +14,7 @@ namespace Utility {
  * @return std::string the serial number field of the certificate. Returns "" if
  *         there is no serial number.
  */
-std::string getSerialNumberFromCertificate(X509& cert);
+std::string getSerialNumberFromCertificate(X509* cert);
 
 } // namespace Utility
 } // namespace Ssl
