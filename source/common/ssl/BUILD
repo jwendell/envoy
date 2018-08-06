@@ -10,13 +10,16 @@ envoy_package()
 
 envoy_cc_library(
     name = "ssl_socket_lib",
-    srcs = ["ssl_socket.cc"],
+    srcs = [
+        "ssl_socket.cc",
+    ],
     hdrs = ["ssl_socket.h"],
     deps = [
         "@openssl_crypto//:openssl-lib",
         ":context_config_lib",
         ":context_lib",
         ":utility_lib",
+        ":bssl_wrapper_lib",
         "//include/envoy/network:connection_interface",
         "//include/envoy/network:transport_socket_interface",
         "//source/common/common:assert_lib",
@@ -57,6 +60,7 @@ envoy_cc_library(
     deps = [
          "@openssl_crypto//:openssl-lib",
         ":utility_lib",
+        "bssl_wrapper_lib",
         "//include/envoy/runtime:runtime_interface",
         "//include/envoy/ssl:context_config_interface",
         "//include/envoy/ssl:context_interface",
@@ -84,6 +88,15 @@ envoy_cc_library(
     name = "utility_lib",
     srcs = ["utility.cc"],
     hdrs = ["utility.h"],
+    deps = [
+         "@openssl_crypto//:openssl-lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "bssl_wrapper_lib",
+    srcs = ["bssl_wrapper.cc"],
+    hdrs = ["bssl_wrapper.h"],
     deps = [
          "@openssl_crypto//:openssl-lib",
     ],

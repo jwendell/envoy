@@ -4,7 +4,6 @@
 
 #include <string>
 #include <vector>
-#include <iostream>
 
 #include "envoy/runtime/runtime.h"
 #include "envoy/ssl/context.h"
@@ -12,11 +11,11 @@
 #include "envoy/stats/stats.h"
 #include "envoy/stats/stats_macros.h"
 
+#include "common/ssl/bssl_wrapper.h"
 #include "common/ssl/context_impl.h"
 #include "common/ssl/context_manager_impl.h"
 
 #include "openssl/ssl.h"
-#include "openssl/x509v3.h"
 
 namespace Envoy {
 #ifndef OPENSSL_IS_BORINGSSL
@@ -46,7 +45,7 @@ struct SslStats {
 
 class ContextImpl : public virtual Context {
 public:
-  virtual SSL* newSsl() const;
+  virtual bssl::UniquePtr<SSL> newSsl() const;
 
   /**
    * Logs successful TLS handshake and updates stats.
@@ -80,40 +79,6 @@ public:
 
 protected:
   ContextImpl(Stats::Scope& scope, const ContextConfig& config);
-
-  ~ContextImpl() {
-    std::cerr << "!!!!!!!!!!!!!!!!!!!! ~ContextImpl \n";
-    free();
-  }
-
-  void free(){
-std::cerr << "!!!!!!!!!!!!!!!!!!!! free " << this << "\n";
-
-    if (ca_cert_ != NULL){
-std::cerr << "            !!!!!!!!!!!!!!!!!!!! freeing ca_cert_ " << " " << ca_cert_ << "\n";
-      X509_free(ca_cert_);
-      ca_cert_ = NULL;
-std::cerr << "            !!!!!!!!!!!!!!!!!!!! freed ca_cert_ " << "\n";
-    }
-
-    if (cert_chain_ != NULL){
-std::cerr << "            !!!!!!!!!!!!!!!!!!!! freeing cert_chain_ " << " " << cert_chain_ << "\n";
-      X509_free(cert_chain_);
-      cert_chain_ = NULL;
-std::cerr << "            !!!!!!!!!!!!!!!!!!!! freed cert_chain_ " << "\n";
-    }
-
-    if (ctx_ != NULL){
-std::cerr << "            !!!!!!!!!!!!!!!!!!!! freeing ctx_ " << "\n";
-
-std::cerr << "            !!!!!!!!!!!!!!!!!!!! SSL_CTX_free " << "\n";
-      SSL_CTX_free(ctx_);
-      ctx_ = NULL;
-    }
-
-std::cerr << "!!!!!!!!!!!!!!!!!!!! freed \n";
-  }
-
 
   /**
    * The global SSL-library index used for storing a pointer to the context
@@ -160,8 +125,7 @@ std::cerr << "!!!!!!!!!!!!!!!!!!!! freed \n";
   std::string getCaFileName() const { return ca_file_path_; };
   std::string getCertChainFileName() const { return cert_chain_file_path_; };
 
-  //ContextManagerImpl& parent_;
-  SSL_CTX* ctx_ = NULL;
+  bssl::UniquePtr<SSL_CTX> ctx_;
   bool verify_trusted_ca_{false};
   std::vector<std::string> verify_subject_alt_name_list_;
   std::vector<std::vector<uint8_t>> verify_certificate_hash_list_;
@@ -169,8 +133,8 @@ std::cerr << "!!!!!!!!!!!!!!!!!!!! freed \n";
   Stats::Scope& scope_;
   SslStats stats_;
   std::vector<uint8_t> parsed_alpn_protocols_;
-  X509* ca_cert_ = NULL;
-  X509* cert_chain_ = NULL;
+  bssl::UniquePtr<X509> ca_cert_;
+  bssl::UniquePtr<X509> cert_chain_;
   std::string ca_file_path_;
   std::string cert_chain_file_path_;
 };
@@ -181,11 +145,7 @@ class ClientContextImpl : public ContextImpl, public ClientContext {
 public:
   ClientContextImpl(Stats::Scope& scope, const ClientContextConfig& config);
 
-//  ~ClientContextImpl() {
-//    parent_.releaseClientContext(this);
-//  }
-
-  SSL* newSsl() const override;
+  bssl::UniquePtr<SSL> newSsl() const override;
 
 private:
   const std::string server_name_indication_;
@@ -197,23 +157,14 @@ public:
   ServerContextImpl(Stats::Scope& scope, const ServerContextConfig& config,
                     const std::vector<std::string>& server_names, Runtime::Loader& runtime);
 
-  ~ServerContextImpl() {
-std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!! ~ServerContextImpl \n";
-
-//    parent_.releaseServerContext(this, listener_name_, server_names_);
-  }
-
-protected:
-  static int xname_cmp(const X509_NAME * const *a, const X509_NAME * const *b);
-  static int ssl_tlsext_ticket_key_cb(SSL*, unsigned char*, unsigned char*, EVP_CIPHER_CTX*, HMAC_CTX*, int);
-  static int cert_cb(SSL *ssl, void *arg);
-
 private:
   int alpnSelectCallback(const unsigned char** out, unsigned char* outlen, const unsigned char* in,
                          unsigned int inlen);
   int sessionTicketProcess(SSL* ssl, uint8_t* key_name, uint8_t* iv, EVP_CIPHER_CTX* ctx,
                            HMAC_CTX* hmac_ctx, int encrypt);
 
+  int ssl_tlsext_ticket_key_cb(SSL* ssl, uint8_t* key_name, uint8_t* iv, EVP_CIPHER_CTX* ctx, HMAC_CTX* hmac_ctx, int encrypt);
+  
   Runtime::Loader& runtime_;
   std::vector<uint8_t> parsed_alt_alpn_protocols_;
   const std::vector<ServerContextConfig::SessionTicketKey> session_ticket_keys_;

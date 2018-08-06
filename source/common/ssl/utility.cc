@@ -14,7 +14,7 @@ std::string Utility::getSerialNumberFromCertificate(X509* cert) {
   if (char_serial_number != nullptr) {
     std::string serial_number(char_serial_number);
 
-    // openssl is uppercase, boringssl is lowercase. So convert
+    //FIXME: openssl is uppercase, boringssl is lowercase. So convert
     std::transform(serial_number.begin(), serial_number.end(), serial_number.begin(), ::tolower);
     
     OPENSSL_free(char_serial_number);

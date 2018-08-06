@@ -21,7 +21,6 @@ class SslSocket : public Network::TransportSocket,
                   protected Logger::Loggable<Logger::Id::connection> {
 public:
   SslSocket(ContextSharedPtr ctx, InitialState state);
-  ~SslSocket() { free(); }
 
   // Ssl::Connection
   bool peerCertificatePresented() const override;
@@ -46,12 +45,7 @@ public:
   Ssl::Connection* ssl() override { return this; }
   const Ssl::Connection* ssl() const override { return this; }
 
-  SSL* rawSslForTest() { return ssl_; }
-
-  void free() {
-    if ( ssl_ != NULL)
-      SSL_free(ssl_);
-  }
+  SSL* rawSslForTest() { return ssl_.get(); }
 
 private:
   Network::PostIoAction doHandshake();
@@ -65,7 +59,7 @@ private:
 
   Network::TransportSocketCallbacks* callbacks_{};
   ContextImplSharedPtr ctx_;
-  SSL* ssl_ = NULL;
+  bssl::UniquePtr<SSL> ssl_;
   bool handshake_complete_{};
   bool shutdown_sent_{};
   uint64_t bytes_to_retry_{};

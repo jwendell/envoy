@@ -115,5 +115,6 @@ envoy_cc_library(
     deps = [
         "@openssl_crypto//:openssl-lib",
         "//source/common/common:assert_lib",
+        "//source/common/ssl:bssl_wrapper_lib"
     ],
 )

@@ -18,6 +18,7 @@
 #include "openssl/rand.h"
 #include "openssl/x509v3.h"
 #include "openssl/err.h"
+#include "openssl/evp.h"
 
 namespace Envoy {
 namespace Ssl {
@@ -34,22 +35,24 @@ ContextImpl::ContextImpl(Stats::Scope& scope, const ContextConfig& config)
     : ctx_(SSL_CTX_new(TLS_method())), scope_(scope), stats_(generateStats(scope)) {
   RELEASE_ASSERT(ctx_, "");
 
-  int rc = SSL_CTX_set_ex_data(ctx_, sslContextIndex(), this);
+  int rc = SSL_CTX_set_ex_data(ctx_.get(), sslContextIndex(), this);
   RELEASE_ASSERT(rc == 1, "");
 
-  //rc = SSL_CTX_set_min_proto_version(ctx_, config.minProtocolVersion());
-  //RELEASE_ASSERT(rc == 1, "");
+  rc = SSL_CTX_set_min_proto_version(ctx_.get(), config.minProtocolVersion());
+  RELEASE_ASSERT(rc == 1, "");
 
-  //rc = SSL_CTX_set_max_proto_version(ctx_, config.maxProtocolVersion());
-  //RELEASE_ASSERT(rc == 1, "");
+  rc = SSL_CTX_set_max_proto_version(ctx_.get(), config.maxProtocolVersion());
+  RELEASE_ASSERT(rc == 1, "");
 
-  size_t num_ciphers = std::count(config.cipherSuites().begin(), config.cipherSuites().end(), ':') + 1;
+  // FIXME: SSL_CTX_set_strict_cipher_list() doesn't exist in OpenSSL, custom implementation follows
+  // if (!SSL_CTX_set_strict_cipher_list(ctx_.get(), config.cipherSuites().c_str())) {
+  //   throw EnvoyException(
+  //       fmt::format("Failed to initialize cipher suites {}", config.cipherSuites()));
+  // }
 
-  SSL_CTX_set_cipher_list(ctx_, config.cipherSuites().c_str());
-  STACK_OF(SSL_CIPHER) *ciphers = SSL_CTX_get_ciphers(ctx_);
-
+  SSL_CTX_set_cipher_list(ctx_.get(), config.cipherSuites().c_str());
+  STACK_OF(SSL_CIPHER) *ciphers = SSL_CTX_get_ciphers(ctx_.get());
   int num_valid_ciphers = sk_SSL_CIPHER_num(ciphers);
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 1 \n";
   char *dup = strdup(config.cipherSuites().c_str());
   char *token = std::strtok(dup, ":[]|");
   while (token != NULL) {
@@ -63,72 +66,52 @@ std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 1 \n";
     }
     if (!found){
       delete dup;
-      free();
       throw EnvoyException(
         fmt::format("Failed to initialize cipher suites {}", config.cipherSuites()));
     }
     token = std::strtok(NULL, ":[]|");
   }
   delete dup;
+  // FIXME: End of custom implementation
 
-  if (!SSL_CTX_set1_curves_list(ctx_, config.ecdhCurves().c_str())) {
+  if (!SSL_CTX_set1_curves_list(ctx_.get(), config.ecdhCurves().c_str())) {
     throw EnvoyException(fmt::format("Failed to initialize ECDH curves {}", config.ecdhCurves()));
   }
 
   int verify_mode = SSL_VERIFY_NONE;
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 2 \n";
+
   if (!config.caCert().empty()) {
     ca_file_path_ = config.caCertPath();
-
-    BIO *ca_cert_bio = BIO_new_mem_buf(const_cast<char*>(config.caCert().data()), config.caCert().size());
-
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 2.1.1 \n";
-    RELEASE_ASSERT(ca_cert_bio != nullptr, "");
+    bssl::UniquePtr<BIO> bio(
+        BIO_new_mem_buf(const_cast<char*>(config.caCert().data()), config.caCert().size()));
+    RELEASE_ASSERT(bio != nullptr, "");
     // Based on BoringSSL's X509_load_cert_crl_file().
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 2.1.2 " << ca_cert_bio << "\n";
-
-    STACK_OF(X509_INFO) *ca_cert_list = PEM_X509_INFO_read_bio(ca_cert_bio, nullptr, nullptr, nullptr);
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 2.1.3 \n";
-
-    if (ca_cert_list == nullptr) {
-      free();
+    bssl::UniquePtr<STACK_OF(X509_INFO)> list(
+        PEM_X509_INFO_read_bio(bio.get(), nullptr, nullptr, nullptr));
+    if (list == nullptr) {
       throw EnvoyException(
           fmt::format("Failed to load trusted CA certificates from {}", config.caCertPath()));
     }
 
-        X509_STORE* store = SSL_CTX_get_cert_store(ctx_);
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 2.2 " << sk_X509_INFO_num(ca_cert_list) << "\n";
-    for (int i = 0; i < sk_X509_INFO_num(ca_cert_list); i++) {
-      X509_INFO *item = sk_X509_INFO_value(ca_cert_list, i);
-std::cerr << "!!!!!!!!!!!!!!!!!! item " << i << "\n";
+    X509_STORE* store = SSL_CTX_get_cert_store(ctx_.get());
+    for (const X509_INFO* item : list.get()) {
       if (item->x509) {
         X509_STORE_add_cert(store, item->x509);
         if (ca_cert_ == nullptr) {
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ca_cert_ == nullptr \n";
-          ca_cert_ = item->x509;
+          X509_up_ref(item->x509);
+          ca_cert_.reset(item->x509);
         }
       }
-item->x509 = NULL;
       if (item->crl) {
         X509_STORE_add_crl(store, item->crl);
       }
     }
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 2.4 \n";
-
     if (ca_cert_ == nullptr) {
-      free();
       throw EnvoyException(
           fmt::format("Failed to load trusted CA certificates from {}", config.caCertPath()));
     }
     verify_mode = SSL_VERIFY_PEER;
     verify_trusted_ca_ = true;
-
-    BIO_free(ca_cert_bio);
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 2.5 \n";
-
-    // Bill - this does not free the underlying x509 object
-    sk_X509_INFO_pop_free(ca_cert_list, X509_INFO_free);
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 2.8 \n";
 
     // NOTE: We're using SSL_CTX_set_cert_verify_callback() instead of X509_verify_cert()
     // directly. However, our new callback is still calling X509_verify_cert() under
@@ -140,39 +123,27 @@ std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 2.8 \n";
   }
 
   if (!config.certificateRevocationList().empty()) {
-    BIO *crl_bio = BIO_new_mem_buf(const_cast<char*>(config.certificateRevocationList().data()),
-                        config.certificateRevocationList().size());
-
-    RELEASE_ASSERT(crl_bio != nullptr, "");
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 3.0.5 \n";
+    bssl::UniquePtr<BIO> bio(
+        BIO_new_mem_buf(const_cast<char*>(config.certificateRevocationList().data()),
+                        config.certificateRevocationList().size()));
+    RELEASE_ASSERT(bio != nullptr, "");
 
     // Based on BoringSSL's X509_load_cert_crl_file().
-    STACK_OF(X509_INFO) *crl_list = PEM_X509_INFO_read_bio(crl_bio, nullptr, nullptr, nullptr);
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 3.2 \n";
-
-    if (crl_list == nullptr) {
-      free();
-      BIO_free(crl_bio);
+    bssl::UniquePtr<STACK_OF(X509_INFO)> list(
+        PEM_X509_INFO_read_bio(bio.get(), nullptr, nullptr, nullptr));
+    if (list == nullptr) {
       throw EnvoyException(
           fmt::format("Failed to load CRL from {}", config.certificateRevocationListPath()));
     }
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 3.3 \n";
-    X509_STORE* store = SSL_CTX_get_cert_store(ctx_);
-    std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 3.4 \n";
-    for (int i = 0; i < sk_X509_INFO_num(crl_list); i++) {
-      X509_INFO *item = sk_X509_INFO_value(crl_list, i);
+
+    X509_STORE* store = SSL_CTX_get_cert_store(ctx_.get());
+    for (const X509_INFO* item : list.get()) {
       if (item->crl) {
         X509_STORE_add_crl(store, item->crl);
       }
     }
 
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 3.6 \n";
     X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL);
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 3.9 \n";
-
-    BIO_free(crl_bio);
-    sk_X509_INFO_pop_free(crl_list, X509_INFO_free);
-
   }
 
   if (!config.verifySubjectAltNameList().empty()) {
@@ -189,7 +160,6 @@ std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 3.9 \n";
       }
       const auto& decoded = Hex::decode(hash);
       if (decoded.size() != SHA256_DIGEST_LENGTH) {
-        free();
         throw EnvoyException(fmt::format("Invalid hex-encoded SHA-256 {}", hash));
       }
       verify_certificate_hash_list_.push_back(decoded);
@@ -201,7 +171,6 @@ std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 3.9 \n";
     for (auto hash : config.verifyCertificateSpkiList()) {
       const auto decoded = Base64::decode(hash);
       if (decoded.size() != SHA256_DIGEST_LENGTH) {
-        free();
         throw EnvoyException(fmt::format("Invalid base64-encoded SHA-256 {}", hash));
       }
       verify_certificate_spki_list_.emplace_back(decoded.begin(), decoded.end());
@@ -210,85 +179,63 @@ std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 3.9 \n";
   }
 
   if (verify_mode != SSL_VERIFY_NONE) {
-    SSL_CTX_set_verify(ctx_, verify_mode, nullptr);
-    SSL_CTX_set_cert_verify_callback(ctx_, ContextImpl::verifyCallback, this);
+    SSL_CTX_set_verify(ctx_.get(), verify_mode, nullptr);
+    SSL_CTX_set_cert_verify_callback(ctx_.get(), ContextImpl::verifyCallback, this);
   }
 
   if (config.certChain().empty() != config.privateKey().empty()) {
-    free();
     throw EnvoyException(fmt::format("Failed to load incomplete certificate from {}, {}",
                                      config.certChainPath(), config.privateKeyPath()));
   }
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 5 \n";
+
   if (!config.certChain().empty()) {
     // Load certificate chain.
     cert_chain_file_path_ = config.certChainPath();
-    BIO *chain_bio = BIO_new_mem_buf(const_cast<char*>(config.certChain().data()), config.certChain().size());
-    RELEASE_ASSERT(chain_bio != nullptr, "");
-    
-    cert_chain_ = PEM_read_bio_X509_AUX(chain_bio, nullptr, nullptr, nullptr);
-    if (cert_chain_ == nullptr || !SSL_CTX_use_certificate(ctx_, cert_chain_)) {
-      free();
-      throw EnvoyException(
-          fmt::format("Failed to load certificate chain from {}", config.certChainPath()));
-    }
-
-std::cerr << "!!!!!!!!!!!!! use_certificate " << cert_chain_ << "\n";
-
-    if (cert_chain_ == nullptr || !SSL_CTX_use_certificate(ctx_, cert_chain_)) {
-      free();
+    bssl::UniquePtr<BIO> bio(
+        BIO_new_mem_buf(const_cast<char*>(config.certChain().data()), config.certChain().size()));
+    RELEASE_ASSERT(bio != nullptr, "");
+    cert_chain_.reset(PEM_read_bio_X509_AUX(bio.get(), nullptr, nullptr, nullptr));
+    if (cert_chain_ == nullptr || !SSL_CTX_use_certificate(ctx_.get(), cert_chain_.get())) {
       throw EnvoyException(
           fmt::format("Failed to load certificate chain from {}", config.certChainPath()));
     }
     // Read rest of the certificate chain.
     while (true) {
-      X509* chain_cert(PEM_read_bio_X509(chain_bio, nullptr, nullptr, nullptr));
-      std::cerr << "!!!!!!!!!!!!! chain_cert " << chain_cert << "\n";
-
-      if (chain_cert == nullptr) {
+      bssl::UniquePtr<X509> cert(PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr));
+      if (cert == nullptr) {
         break;
       }
-       if (!SSL_CTX_add_extra_chain_cert(ctx_, chain_cert)) {
-        free();
+      if (!SSL_CTX_add_extra_chain_cert(ctx_.get(), cert.get())) {
         throw EnvoyException(
             fmt::format("Failed to load certificate chain from {}", config.certChainPath()));
       }
       // SSL_CTX_add_extra_chain_cert() takes ownership.
-      X509_free(chain_cert);
+      cert.release();
     }
     // Check for EOF.
     uint32_t err = ERR_peek_last_error();
     if (ERR_GET_LIB(err) == ERR_LIB_PEM && ERR_GET_REASON(err) == PEM_R_NO_START_LINE) {
       ERR_clear_error();
     } else {
-      free();
       throw EnvoyException(
           fmt::format("Failed to load certificate chain from {}", config.certChainPath()));
     }
 
-    BIO_free(chain_bio);
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl 6 \n";
-
     // Load private key.
-    BIO *key_bio = BIO_new_mem_buf(const_cast<char*>(config.privateKey().data()), config.privateKey().size());
-    RELEASE_ASSERT(key_bio != nullptr, "");
-    EVP_PKEY* pkey(PEM_read_bio_PrivateKey(key_bio, nullptr, nullptr, nullptr));
-    if (pkey == nullptr || !SSL_CTX_use_PrivateKey(ctx_, pkey)) {
-      free();
+    bio.reset(
+        BIO_new_mem_buf(const_cast<char*>(config.privateKey().data()), config.privateKey().size()));
+    RELEASE_ASSERT(bio != nullptr, "");
+    bssl::UniquePtr<EVP_PKEY> pkey(PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr));
+    if (pkey == nullptr || !SSL_CTX_use_PrivateKey(ctx_.get(), pkey.get())) {
       throw EnvoyException(
           fmt::format("Failed to load private key from {}", config.privateKeyPath()));
     }
-    BIO_free(key_bio);
-    EVP_PKEY_free(pkey);
-
   }
 
   // use the server's cipher list preferences
-  SSL_CTX_set_options(ctx_, SSL_OP_CIPHER_SERVER_PREFERENCE);
+  SSL_CTX_set_options(ctx_.get(), SSL_OP_CIPHER_SERVER_PREFERENCE);
 
   parsed_alpn_protocols_ = parseAlpnProtocols(config.alpnProtocols());
-
-  std::cerr << "!!!!!!!!!!!!!!!!!!!! ContextImpl done \n";
 }
 
 int ServerContextImpl::alpnSelectCallback(const unsigned char** out, unsigned char* outlen,
@@ -337,8 +284,8 @@ std::vector<uint8_t> ContextImpl::parseAlpnProtocols(const std::string& alpn_pro
   return out;
 }
 
-SSL* ContextImpl::newSsl() const {
-  return SSL_new(ctx_);
+bssl::UniquePtr<SSL> ContextImpl::newSsl() const {
+  return bssl::UniquePtr<SSL>(SSL_new(ctx_.get()));
 }
 
 int ContextImpl::ignoreCertificateExpirationCallback(int ok, X509_STORE_CTX* ctx) {
@@ -365,11 +312,8 @@ int ContextImpl::verifyCallback(X509_STORE_CTX* store_ctx, void* arg) {
 
   SSL* ssl = reinterpret_cast<SSL*>(
       X509_STORE_CTX_get_ex_data(store_ctx, SSL_get_ex_data_X509_STORE_CTX_idx()));
-  X509* cert(SSL_get_peer_certificate(ssl));
-  int verified = impl->verifyCertificate(cert);
-  X509_free(cert);
-  return verified;
-
+  bssl::UniquePtr<X509> cert(SSL_get_peer_certificate(ssl));
+  return impl->verifyCertificate(cert.get());
 }
 
 int ContextImpl::verifyCertificate(X509* cert) {
@@ -406,52 +350,39 @@ void ContextImpl::logHandshake(SSL* ssl) const {
   const char* cipher = SSL_get_cipher_name(ssl);
   scope_.counter(fmt::format("ssl.ciphers.{}", std::string{cipher})).inc();
 
-  X509* cert(SSL_get_peer_certificate(ssl));
-  if (!cert) {
+  bssl::UniquePtr<X509> cert(SSL_get_peer_certificate(ssl));
+  if (!cert.get()) {
     stats_.no_certificate_.inc();
   }
-  X509_free(cert);
-
 }
 
 bool ContextImpl::verifySubjectAltName(X509* cert,
                                        const std::vector<std::string>& subject_alt_names) {
-  bool verified = false;
-
-  STACK_OF(GENERAL_NAME)* altnames = static_cast<STACK_OF(GENERAL_NAME)*>(
-      X509_get_ext_d2i(cert, NID_subject_alt_name, nullptr, nullptr));
-
-  if (altnames) {
-    int n = sk_GENERAL_NAME_num(altnames);
-    for (int i = 0; i < n && !verified; i++) {
-      GENERAL_NAME* altname = sk_GENERAL_NAME_value(altnames, i);
-
-      if (altname->type == GEN_DNS) {
-        ASN1_STRING* str = altname->d.dNSName;
-        char* dns_name = reinterpret_cast<char*>(ASN1_STRING_data(str));
-        for (auto& config_san : subject_alt_names) {
-          if (dNSNameMatch(config_san, dns_name)) {
-            verified = true;
-            break;
-          }
+  bssl::UniquePtr<GENERAL_NAMES> san_names(
+      static_cast<GENERAL_NAMES*>(X509_get_ext_d2i(cert, NID_subject_alt_name, nullptr, nullptr)));
+  if (san_names == nullptr) {
+    return false;
+  }
+  for (const GENERAL_NAME* san : san_names.get()) {
+    if (san->type == GEN_DNS) {
+      ASN1_STRING* str = san->d.dNSName;
+      const char* dns_name = reinterpret_cast<const char*>(ASN1_STRING_data(str));
+      for (auto& config_san : subject_alt_names) {
+        if (dNSNameMatch(config_san, dns_name)) {
+          return true;
         }
-      } else if (altname->type == GEN_URI) {
-        ASN1_STRING* str = altname->d.uniformResourceIdentifier;
-        char* crt_san = reinterpret_cast<char*>(ASN1_STRING_data(str));
-        for (auto& config_san : subject_alt_names) {
-          if (config_san.compare(crt_san) == 0) {
-            verified = true;
-            break;
-          }
+      }
+    } else if (san->type == GEN_URI) {
+      ASN1_STRING* str = san->d.uniformResourceIdentifier;
+      const char* uri = reinterpret_cast<const char*>(ASN1_STRING_data(str));
+      for (auto& config_san : subject_alt_names) {
+        if (config_san.compare(uri) == 0) {
+          return true;
         }
       }
     }
-
-    sk_GENERAL_NAME_pop_free(altnames, GENERAL_NAME_free);
   }
-
-  return verified;
-
+  return false;
 }
 
 bool ContextImpl::dNSNameMatch(const std::string& dNSName, const char* pattern) {
@@ -496,7 +427,7 @@ bool ContextImpl::verifyCertificateSpkiList(
   if (len < 0) {
     return false;
   }
-  uint8_t* free_spki(spki);
+  bssl::UniquePtr<uint8_t> free_spki(spki);
 
   std::vector<uint8_t> computed_hash(SHA256_DIGEST_LENGTH);
   SHA256(spki, len, computed_hash.data());
@@ -516,9 +447,9 @@ SslStats ContextImpl::generateStats(Stats::Scope& store) {
 }
 
 size_t ContextImpl::daysUntilFirstCertExpires() const {
-  int daysUntilExpiration = getDaysUntilExpiration(ca_cert_);
+  int daysUntilExpiration = getDaysUntilExpiration(ca_cert_.get());
   daysUntilExpiration =
-      std::min<int>(getDaysUntilExpiration(cert_chain_), daysUntilExpiration);
+      std::min<int>(getDaysUntilExpiration(cert_chain_.get()), daysUntilExpiration);
   if (daysUntilExpiration < 0) { // Ensure that the return value is unsigned
     return 0;
   }
@@ -541,8 +472,8 @@ std::string ContextImpl::getCaCertInformation() const {
     return "";
   }
   return fmt::format("Certificate Path: {}, Serial Number: {}, Days until Expiration: {}",
-                     getCaFileName(), Utility::getSerialNumberFromCertificate(ca_cert_),
-                     getDaysUntilExpiration(ca_cert_));
+                     getCaFileName(), Utility::getSerialNumberFromCertificate(ca_cert_.get()),
+                     getDaysUntilExpiration(ca_cert_.get()));
 }
 
 std::string ContextImpl::getCertChainInformation() const {
@@ -551,32 +482,44 @@ std::string ContextImpl::getCertChainInformation() const {
   }
   return fmt::format("Certificate Path: {}, Serial Number: {}, Days until Expiration: {}",
                      getCertChainFileName(),
-                     Utility::getSerialNumberFromCertificate(cert_chain_),
-                     getDaysUntilExpiration(cert_chain_));
+                     Utility::getSerialNumberFromCertificate(cert_chain_.get()),
+                     getDaysUntilExpiration(cert_chain_.get()));
 }
 
 ClientContextImpl::ClientContextImpl(Stats::Scope& scope, const ClientContextConfig& config)
     : ContextImpl(scope, config), server_name_indication_(config.serverNameIndication()),
       allow_renegotiation_(config.allowRenegotiation()) {
-
-std::cerr << "!!!!!!!!!!!!!!!!!!!! ClientContextImpl \n";
   if (!parsed_alpn_protocols_.empty()) {
-    int rc = SSL_CTX_set_alpn_protos(ctx_, &parsed_alpn_protocols_[0],
+    int rc = SSL_CTX_set_alpn_protos(ctx_.get(), &parsed_alpn_protocols_[0],
                                      parsed_alpn_protocols_.size());
     RELEASE_ASSERT(rc == 0, "");
   }
 }
 
-SSL* ClientContextImpl::newSsl() const {
-  SSL* ssl_con(ContextImpl::newSsl());
+bssl::UniquePtr<SSL> ClientContextImpl::newSsl() const {
+  bssl::UniquePtr<SSL> ssl_con(ContextImpl::newSsl());
 
   if (!server_name_indication_.empty()) {
-    int rc = SSL_set_tlsext_host_name(ssl_con, server_name_indication_.c_str());
+    int rc = SSL_set_tlsext_host_name(ssl_con.get(), server_name_indication_.c_str());
     RELEASE_ASSERT(rc, "");
-    UNREFERENCED_PARAMETER(rc);
   }
 
+// FIXME: This method doesn't exist in OpenSSL
+//  if (allow_renegotiation_) {
+//    SSL_set_renegotiate_mode(ssl_con.get(), ssl_renegotiate_freely);
+//  }
+
   return ssl_con;
+}
+
+int
+ServerContextImpl::ssl_tlsext_ticket_key_cb(SSL* ssl, uint8_t* key_name, uint8_t* iv, EVP_CIPHER_CTX* ctx, HMAC_CTX* hmac_ctx, int encrypt) {
+  ContextImpl* context_impl = static_cast<ContextImpl*>(
+      SSL_CTX_get_ex_data(SSL_get_SSL_CTX(ssl), sslContextIndex()));
+  ServerContextImpl* server_context_impl = dynamic_cast<ServerContextImpl*>(context_impl);
+  RELEASE_ASSERT(server_context_impl != nullptr, ""); // for Coverity
+  return server_context_impl->sessionTicketProcess(ssl, key_name, iv, ctx, hmac_ctx,
+                                                    encrypt);
 }
 
 ServerContextImpl::ServerContextImpl(Stats::Scope& scope, const ServerContextConfig& config,
@@ -584,81 +527,57 @@ ServerContextImpl::ServerContextImpl(Stats::Scope& scope, const ServerContextCon
                                      Runtime::Loader& runtime)
     : ContextImpl(scope, config), runtime_(runtime),
       session_ticket_keys_(config.sessionTicketKeys()) {
-std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! ServerContextImpl \n";
-
-  SSL_CTX_set_cert_cb(ctx_, cert_cb, nullptr);
-
   if (config.certChain().empty()) {
     throw EnvoyException("Server TlsCertificates must have a certificate specified");
   }
   if (!config.caCert().empty()) {
-    BIO* bio(
+    bssl::UniquePtr<BIO> bio(
         BIO_new_mem_buf(const_cast<char*>(config.caCert().data()), config.caCert().size()));
-
     RELEASE_ASSERT(bio != nullptr, "");
     // Based on BoringSSL's SSL_add_file_cert_subjects_to_stack().
-    STACK_OF(X509_NAME)* list(sk_X509_NAME_new(xname_cmp));
+    bssl::UniquePtr<STACK_OF(X509_NAME)> list(sk_X509_NAME_new(
+        [](const X509_NAME* const *a, const X509_NAME* const *b) -> int { return X509_NAME_cmp(*a, *b); }));
     RELEASE_ASSERT(list != nullptr, "");
     for (;;) {
-      X509* cert(PEM_read_bio_X509(bio, nullptr, nullptr, nullptr));
+      bssl::UniquePtr<X509> cert(PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr));
       if (cert == nullptr) {
         break;
       }
-      X509_NAME* name = X509_get_subject_name(cert);
+      X509_NAME* name = X509_get_subject_name(cert.get());
       if (name == nullptr) {
-        BIO_free(bio);
-        X509_free(cert);
-        sk_X509_NAME_pop_free(list, X509_NAME_free);
-        free();
         throw EnvoyException(fmt::format("Failed to load trusted client CA certificates from {}",
                                          config.caCertPath()));
       }
       // Check for duplicates.
-      if (sk_X509_NAME_find(list, name)) {
-        X509_free(cert);
+      if (sk_X509_NAME_find(list.get(), nullptr, name)) {
         continue;
       }
-      X509_NAME* name_dup(X509_NAME_dup(name));
-      if (name_dup == nullptr || !sk_X509_NAME_push(list, name_dup)) {
-        BIO_free(bio);
-        X509_free(cert);
-        sk_X509_NAME_pop_free(list, X509_NAME_free);
-        free();
+      bssl::UniquePtr<X509_NAME> name_dup(X509_NAME_dup(name));
+      if (name_dup == nullptr || !sk_X509_NAME_push(list.get(), name_dup.release())) {
         throw EnvoyException(fmt::format("Failed to load trusted client CA certificates from {}",
                                          config.caCertPath()));
       }
-      X509_free(cert);
-      X509_NAME_free(name_dup);
     }
-
-std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!! 1 \n";
     // Check for EOF.
     uint32_t err = ERR_peek_last_error();
     if (ERR_GET_LIB(err) == ERR_LIB_PEM && ERR_GET_REASON(err) == PEM_R_NO_START_LINE) {
       ERR_clear_error();
     } else {
-      BIO_free(bio);
-      sk_X509_NAME_pop_free(list, X509_NAME_free);
       throw EnvoyException(fmt::format("Failed to load trusted client CA certificates from {}",
                                        config.caCertPath()));
     }
-std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!! 1.5 \n";
-    SSL_CTX_set_client_CA_list(ctx_, list);
+    SSL_CTX_set_client_CA_list(ctx_.get(), list.release());
 
     // SSL_VERIFY_PEER or stronger mode was already set in ContextImpl::ContextImpl().
     if (config.requireClientCertificate()) {
-      SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+      SSL_CTX_set_verify(ctx_.get(), SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
     }
-std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!! 2 \n";
-//    sk_X509_NAME_pop_free(list, X509_NAME_free);
-    BIO_free(bio);
-
   }
 
   parsed_alt_alpn_protocols_ = parseAlpnProtocols(config.altAlpnProtocols());
 
   if (!parsed_alpn_protocols_.empty()) {
-    SSL_CTX_set_alpn_select_cb(ctx_,
+    SSL_CTX_set_alpn_select_cb(ctx_.get(),
                                [](SSL*, const unsigned char** out, unsigned char* outlen,
                                   const unsigned char* in, unsigned int inlen, void* arg) -> int {
                                  return static_cast<ServerContextImpl*>(arg)->alpnSelectCallback(
@@ -668,33 +587,22 @@ std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!! 2 \n";
   }
 
   if (!session_ticket_keys_.empty()) {
-    SSL_CTX_set_tlsext_ticket_key_cb(ctx_, ssl_tlsext_ticket_key_cb);
+    SSL_CTX_set_tlsext_ticket_key_cb(
+        ctx_.get(),
+        &ServerContextImpl::ssl_tlsext_ticket_key_cb);
   }
 
-//    SSL_CTX_set_tlsext_ticket_key_cb(
-//        ctx_,
-//        [](SSL* ssl, uint8_t* key_name, uint8_t* iv, EVP_CIPHER_CTX* ctx, HMAC_CTX* hmac_ctx,
-//           int encrypt) -> int {
-//          ContextImpl* context_impl = static_cast<ContextImpl*>(
-//              SSL_CTX_get_ex_data(SSL_get_SSL_CTX(ssl), sslContextIndex()));
-//          ServerContextImpl* server_context_impl = dynamic_cast<ServerContextImpl*>(context_impl);
-//          RELEASE_ASSERT(server_context_impl != nullptr, ""); // for Coverity
-//          return server_context_impl->sessionTicketProcess(ssl, key_name, iv, ctx, hmac_ctx,
-//                                                           encrypt);
-//       });
-//  }
-std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!! 3 \n";
   uint8_t session_context_buf[EVP_MAX_MD_SIZE] = {};
   unsigned session_context_len = 0;
-  EVP_MD_CTX* md(EVP_MD_CTX_new());
+  EVP_MD_CTX *md(EVP_MD_CTX_new());
   int rc = EVP_DigestInit(md, EVP_sha256());
   RELEASE_ASSERT(rc == 1, "");
-std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!! 4 \n";
+
   // Hash the CommonName/SANs of the server certificate. This makes sure that
   // sessions can only be resumed to a certificate for the same name, but allows
   // resuming to unique certs in the case that different Envoy instances each have
   // their own certs.
-  X509* cert = SSL_CTX_get0_certificate(ctx_);
+  X509* cert = SSL_CTX_get0_certificate(ctx_.get());
   RELEASE_ASSERT(cert != nullptr, "");
   X509_NAME* cert_subject = X509_get_subject_name(cert);
   RELEASE_ASSERT(cert_subject != nullptr, "");
@@ -709,18 +617,15 @@ std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!! 4 \n";
     RELEASE_ASSERT(rc == 1, "");
   }
 
-  GENERAL_NAMES* san_names(
+  bssl::UniquePtr<GENERAL_NAMES> san_names(
       static_cast<GENERAL_NAMES*>(X509_get_ext_d2i(cert, NID_subject_alt_name, nullptr, nullptr)));
   if (san_names != nullptr) {
-    std::cerr << "!!!!!!!!!!!!!!!! sk_GENERAL_NAME_num(san_names) " << sk_GENERAL_NAME_num(san_names) << "\n";
-    for (size_t i = 0; i < sk_GENERAL_NAME_num(san_names); i++) {
-      const GENERAL_NAME* san = sk_GENERAL_NAME_value(san_names, i);
+    for (const GENERAL_NAME* san : san_names.get()) {
       if (san->type == GEN_DNS || san->type == GEN_URI) {
         rc = EVP_DigestUpdate(md, ASN1_STRING_data(san->d.ia5), ASN1_STRING_length(san->d.ia5));
         RELEASE_ASSERT(rc == 1, "");
       }
     }
-    GENERAL_NAMES_free(san_names);
   } else {
     // Make sure that we have either CommonName or SANs.
     RELEASE_ASSERT(cn_index >= 0, "");
@@ -737,7 +642,7 @@ std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!! 4 \n";
   // the correct settings, even if session resumption across different listeners
   // is enabled.
   if (ca_cert_ != nullptr) {
-    rc = X509_digest(ca_cert_, EVP_sha256(), session_context_buf, &session_context_len);
+    rc = X509_digest(ca_cert_.get(), EVP_sha256(), session_context_buf, &session_context_len);
     RELEASE_ASSERT(rc == 1 && session_context_len == SHA256_DIGEST_LENGTH, "");
     rc = EVP_DigestUpdate(md, session_context_buf, session_context_len);
     RELEASE_ASSERT(rc == 1, "");
@@ -772,29 +677,10 @@ std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!! 4 \n";
 
   rc = EVP_DigestFinal(md, session_context_buf, &session_context_len);
   RELEASE_ASSERT(rc == 1, "");
-  rc = SSL_CTX_set_session_id_context(ctx_, session_context_buf, session_context_len);
+  rc = SSL_CTX_set_session_id_context(ctx_.get(), session_context_buf, session_context_len);
   RELEASE_ASSERT(rc == 1, "");
 
   EVP_MD_CTX_free(md);
-
-std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!! ServerContextImpl done \n";
-}
-
-int ServerContextImpl::cert_cb(SSL *ssl, void *arg)
-{
-std::cerr << "!!!!!!!!!!!!!!!!!! cert_cb \n";
-  return 1;
-}
-
-int ServerContextImpl::xname_cmp(const X509_NAME * const *a, const X509_NAME * const *b)
-{
-    return(X509_NAME_cmp(*a,*b));
-}
-
-int ServerContextImpl::ssl_tlsext_ticket_key_cb(SSL *s, unsigned char key_name[16], unsigned char *iv, EVP_CIPHER_CTX *ctx, HMAC_CTX *hctx, int enc)
-{
-std::cerr << "!!!!!!!!!!!!!!!!!! ssl_tlsext_ticket_key_cb \n";
-  return 1;
 }
 
 int ServerContextImpl::sessionTicketProcess(SSL*, uint8_t* key_name, uint8_t* iv,
@@ -811,11 +697,10 @@ int ServerContextImpl::sessionTicketProcess(SSL*, uint8_t* key_name, uint8_t* iv
 
     const ServerContextConfig::SessionTicketKey& key = session_ticket_keys_.front();
 
-    // SSL_TICKET_KEY_NAME_LEN =16 for openssl
-    static_assert(std::tuple_size<decltype(key.name_)>::value == 16,
-        "Expected key.name length");
-    std::copy_n(key.name_.begin(), 16, key_name);
-    
+    static_assert(std::tuple_size<decltype(key.name_)>::value == SSL_TICKET_KEY_NAME_LEN,
+                  "Expected key.name length");
+    std::copy_n(key.name_.begin(), SSL_TICKET_KEY_NAME_LEN, key_name);
+
     int rc = RAND_bytes(iv, EVP_CIPHER_iv_length(cipher));
     ASSERT(rc);
 
@@ -835,7 +720,7 @@ int ServerContextImpl::sessionTicketProcess(SSL*, uint8_t* key_name, uint8_t* iv
     // Decrypt
     bool is_enc_key = true; // first element is the encryption key
     for (const ServerContextConfig::SessionTicketKey& key : session_ticket_keys_) {
-      static_assert(std::tuple_size<decltype(key.name_)>::value == 16,
+      static_assert(std::tuple_size<decltype(key.name_)>::value == SSL_TICKET_KEY_NAME_LEN,
                     "Expected key.name length");
       if (std::equal(key.name_.begin(), key.name_.end(), key_name)) {
         if (!HMAC_Init_ex(hmac_ctx, key.hmac_key_.data(), key.hmac_key_.size(), hmac, nullptr)) {
