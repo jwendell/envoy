@@ -164,7 +164,13 @@ elif [[ "$CI_TARGET" == "bazel.tsan" ]]; then
   setup_clang_toolchain
   echo "bazel TSAN debug build with tests"
   echo "Building and testing envoy tests ${TEST_TARGETS}"
-  bazel_with_collection test ${BAZEL_BUILD_OPTIONS} -c dbg --config=clang-tsan --build_tests_only ${TEST_TARGETS}
+  bazel_with_collection test --config=rbe-toolchain-tsan ${BAZEL_BUILD_OPTIONS} -c dbg --build_tests_only ${TEST_TARGETS}
+  if [ "${ENVOY_BUILD_FILTER_EXAMPLE}" == "1" ]; then
+    echo "Building and testing envoy-filter-example tests..."
+    pushd "${ENVOY_FILTER_EXAMPLE_SRCDIR}"
+    bazel_with_collection test ${BAZEL_BUILD_OPTIONS} -c dbg --config=clang-tsan ${ENVOY_FILTER_EXAMPLE_TESTS}
+    popd
+  fi
   exit 0
 elif [[ "$CI_TARGET" == "bazel.msan" ]]; then
   ENVOY_STDLIB=libc++
