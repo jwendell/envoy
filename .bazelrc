@@ -128,6 +128,7 @@ build:gcc --cxxopt=-Wno-dangling-reference
 build:gcc --cxxopt=-Wno-nonnull-compare
 build:gcc --incompatible_enable_cc_toolchain_resolution=false
 build:gcc --linkopt=-fuse-ld=bfd --host_linkopt=-fuse-ld=bfd
+build:gcc --features=-supports_start_end_lib --host_features=-supports_start_end_lib
 
 # Clang-tidy
 # TODO(phlax): enable this, its throwing some errors as well as finding more issues
