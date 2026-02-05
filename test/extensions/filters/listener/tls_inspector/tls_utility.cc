@@ -13,6 +13,12 @@ std::vector<uint8_t> generateClientHello(uint16_t tls_min_version, uint16_t tls_
                                          const std::string& sni_name, const std::string& alpn) {
   bssl::UniquePtr<SSL_CTX> ctx(SSL_CTX_new(TLS_with_buffers_method()));
 
+#ifdef ENVOY_SSL_OPENSSL
+  // Allow legacy TLS versions (1.0/1.1) on OpenSSL 3.x by lowering security level.
+  // This is only for test purposes to generate ClientHello messages.
+  SSL_CTX_set_security_level(ctx.get(), 0);
+#endif
+
   SSL_CTX_set_min_proto_version(ctx.get(), tls_min_version);
   SSL_CTX_set_max_proto_version(ctx.get(), tls_max_version);
 

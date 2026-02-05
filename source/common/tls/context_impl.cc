@@ -107,6 +107,14 @@ ContextImpl::ContextImpl(
     ctx.ssl_ctx_.reset(SSL_CTX_new(TLS_method()));
     ssl_contexts[i] = ctx.ssl_ctx_.get();
 
+#ifdef ENVOY_SSL_OPENSSL
+    // Set security level to 0 to allow Envoy's application-level validation to handle
+    // certificate requirements. OpenSSL 3.x defaults to security level 1, which rejects
+    // weak certificates (e.g., RSA < 2048 bits) at the library level before Envoy's
+    // validation can provide specific error messages about why a certificate is rejected.
+    SSL_CTX_set_security_level(ctx.ssl_ctx_.get(), 0);
+#endif
+
     int rc = SSL_CTX_set_app_data(ctx.ssl_ctx_.get(), this);
     RELEASE_ASSERT(rc == 1, Utility::getLastCryptoError().value_or(""));
 

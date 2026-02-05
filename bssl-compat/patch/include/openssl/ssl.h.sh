@@ -229,4 +229,14 @@ cat >> "$1" <<'EOF'
 #ifdef ossl_SSL_ERROR_WANT_CLIENT_HELLO_CB
 #define SSL_ERROR_WANT_CLIENT_HELLO_CB ossl_SSL_ERROR_WANT_CLIENT_HELLO_CB
 #endif
+
+// OpenSSL-specific function to set security level.
+// This doesn't exist in BoringSSL. Security level 0 allows legacy TLS 1.0/1.1.
+#if defined(__cplusplus)
+extern "C" {
+#endif
+OPENSSL_EXPORT void SSL_CTX_set_security_level(SSL_CTX *ctx, int level);
+#if defined(__cplusplus)
+}
+#endif
 EOF
