@@ -82,6 +82,23 @@ jobs:
       request: ${{ needs.load.outputs.request }}
       trusted: ${{ needs.load.outputs.trusted && fromJSON(needs.load.outputs.trusted) || false }}
 
+  clang-tidy:
+    secrets:
+      dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      pull-requests: read
+    name: Check (${{ needs.load.outputs.request && fromJSON(needs.load.outputs.request).summary.title || 'SKIPPED' }})
+    uses: ./.github/workflows/_check_clang_tidy.yml
+    if: ${{ fromJSON(needs.load.outputs.request).run.check-clang-tidy }}
+    needs:
+    - load
+    with:
+      request: ${{ needs.load.outputs.request }}
+      trusted: ${{ needs.load.outputs.trusted && fromJSON(needs.load.outputs.trusted) || false }}
+
   coverage:
     secrets:
       dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -151,12 +168,14 @@ jobs:
       && (fromJSON(needs.load.outputs.request).run.check-build
           || fromJSON(needs.load.outputs.request).run.check-build-openssl
           || fromJSON(needs.load.outputs.request).run.check-build-openssl-presubmit
+          || fromJSON(needs.load.outputs.request).run.check-clang-tidy
           || fromJSON(needs.load.outputs.request).run.check-coverage
           || fromJSON(needs.load.outputs.request).run.check-san)
     needs:
     - load
     - build
     - build-openssl
+    - clang-tidy
     - coverage
     - runtime
     - san
@@ -165,5 +184,6 @@ jobs:
       needs: ${{ toJSON(needs) }}
       allowed-to-fail: |
         build-openssl
+        clang-tidy
       slack-channel: '#envoy-ci'
       slack-channel-allowed-failure: '#envoy-openssl'

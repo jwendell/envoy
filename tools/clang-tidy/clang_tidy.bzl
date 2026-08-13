@@ -24,16 +24,17 @@
 #
 
 def _clang_tidy_impl(ctx):
+    binary_name = ctx.attr.binary_name
     clang_bin = None
     for file in ctx.attr.target[DefaultInfo].data_runfiles.files.to_list():
-        if file.basename == "clang-tidy" and file.dirname.split("/").pop() == "bin":
+        if file.basename == binary_name and file.dirname.split("/").pop() == "bin":
             clang_bin = file
             break
 
     if not clang_bin:
-        fail("Unable to find clang-tidy file in package")
+        fail("Unable to find %s file in package" % binary_name)
 
-    output_file = ctx.actions.declare_file("clang-tidy")
+    output_file = ctx.actions.declare_file(binary_name)
     args = ctx.actions.args()
     args.add(clang_bin.path)
     args.add(output_file.path)
@@ -52,6 +53,10 @@ def _clang_tidy_impl(ctx):
 clang_tidy = rule(
     implementation = _clang_tidy_impl,
     attrs = {
+        "binary_name": attr.string(
+            default = "clang-tidy",
+            doc = "Basename of the toolchain binary to fish out of the target's `bin` dir.",
+        ),
         "target": attr.label(
             allow_files = True,
         ),

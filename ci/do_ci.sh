@@ -488,10 +488,12 @@ case $CI_TARGET in
 
     clang-tidy)
         setup_clang_toolchain
-        export CLANG_TIDY_FIX_DIFF="${ENVOY_TEST_TMPDIR}/lint-fixes/clang-tidy-fixed.diff"
-        export FIX_YAML="${ENVOY_TEST_TMPDIR}/lint-fixes/clang-tidy-fixes.yaml"
-        export CLANG_TIDY_APPLY_FIXES=1
-        mkdir -p "${ENVOY_TEST_TMPDIR}/lint-fixes"
+        # Diff of any fixes applied below, uploaded as a CI artifact. `/build` in
+        # the container maps to the host path collected by the workflow.
+        CLANG_TIDY_FIX_DIFF="${CLANG_TIDY_FIX_DIFF:-/build/clang-tidy-fixes.diff}"
+        CLANG_TIDY_FIXES_DIR="${ENVOY_TEST_TMPDIR}/lint-fixes/fixes"
+        rm -rf "${CLANG_TIDY_FIXES_DIR}"
+        mkdir -p "${CLANG_TIDY_FIXES_DIR}"
         if [[ $# -ge 1 ]]; then
             CLANG_TIDY_TARGETS=("$@")
         elif [[ -n "${CLANG_TIDY_TARGETS[*]}" ]]; then
@@ -515,7 +517,31 @@ case $CI_TARGET in
               -- \
               --repository="envoy" \
               --output="${ENVOY_SRCDIR}/clang-tidy-fixes.yaml" \
+              --fixes-dir="${CLANG_TIDY_FIXES_DIR}" \
               "${CLANG_TIDY_TARGETS[@]}"
+        # Apply the collected fixes in place (like the `format` check) so a failing
+        # run surfaces a `git diff` devs can apply. clang-apply-replacements comes
+        # from the hermetic LLVM toolchain, not the host.
+        if [[ -n "$(ls -A "${CLANG_TIDY_FIXES_DIR}" 2>/dev/null)" ]]; then
+            echo "Applying clang-tidy fixes with clang-apply-replacements"
+            bazel run \
+                  "${BAZEL_BUILD_OPTIONS[@]}" \
+                  //tools/clang-tidy:clang-apply-replacements \
+                  -- \
+                  --format \
+                  --style=file \
+                  "${CLANG_TIDY_FIXES_DIR}"
+        fi
+        if [[ -n "$(cd "${ENVOY_SRCDIR}" && git status --porcelain)" ]]; then
+            mkdir -p "$(dirname "${CLANG_TIDY_FIX_DIFF}")"
+            (cd "${ENVOY_SRCDIR}" && git diff) | tee "${CLANG_TIDY_FIX_DIFF}" >&2
+            echo >&2
+            echo "clang-tidy found issues. Applying the above diff should fix them." >&2
+            echo "The diff is uploaded as a CI artifact for this run." >&2
+            echo >&2
+            exit 1
+        fi
+        echo "clang-tidy: no fixes required."
         ;;
 
     clean|expunge)

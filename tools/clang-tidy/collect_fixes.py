@@ -34,6 +34,17 @@ def parse_args() -> argparse.Namespace:
         help="Bazel repository name for the current workspace, for example 'envoy'.",
     )
     parser.add_argument(
+        "--fixes-dir",
+        type=Path,
+        help=(
+            "Optional directory to write apply-ready fixes into: one "
+            "clang-apply-replacements YAML file per translation unit, with "
+            "each diagnostic's BuildDirectory rewritten to the workspace root "
+            "so relative FilePaths resolve. Consumed by "
+            "`clang-apply-replacements <fixes-dir>`."
+        ),
+    )
+    parser.add_argument(
         "targets",
         nargs="+",
         help=(
@@ -209,7 +220,9 @@ def filter_document_diagnostics(document: dict, repository_name: str | None) -> 
     return filtered_document
 
 
-def merge_file_contents(fix_files: list[Path], repository_name: str | None) -> str:
+def collect_filtered_documents(
+    fix_files: list[Path], repository_name: str | None
+) -> list[dict]:
     merged_documents = []
     for fix_file in fix_files:
         with fix_file.open(encoding="utf-8") as stream:
@@ -220,10 +233,39 @@ def merge_file_contents(fix_files: list[Path], repository_name: str | None) -> s
                 if filtered_document is not None:
                     merged_documents.append(filtered_document)
 
-    if not merged_documents:
+    return merged_documents
+
+
+def dump_documents(documents: list[dict]) -> str:
+    if not documents:
         return ""
 
-    return yaml.safe_dump_all(merged_documents, explicit_start=True, sort_keys=False)
+    return yaml.safe_dump_all(documents, explicit_start=True, sort_keys=False)
+
+
+def normalize_build_directory(document: dict, build_directory: str) -> dict:
+    # clang-apply-replacements resolves each diagnostic's relative FilePath
+    # (e.g. ./source/foo.cc) against its BuildDirectory. The aspect records an
+    # RBE-absolute BuildDirectory that does not exist when fixes are applied
+    # locally, so rewrite it to the workspace root.
+    normalized = dict(document)
+    diagnostics = []
+    for diagnostic in normalized.get("Diagnostics", []):
+        if isinstance(diagnostic, dict):
+            diagnostic = dict(diagnostic)
+            diagnostic["BuildDirectory"] = build_directory
+        diagnostics.append(diagnostic)
+    normalized["Diagnostics"] = diagnostics
+    return normalized
+
+
+def write_fixes_dir(documents: list[dict], fixes_dir: Path, build_directory: str) -> None:
+    fixes_dir.mkdir(parents=True, exist_ok=True)
+    for index, document in enumerate(documents):
+        normalized = normalize_build_directory(document, build_directory)
+        fix_path = fixes_dir / f"{index:04d}.yaml"
+        with fix_path.open("w", encoding="utf-8") as stream:
+            yaml.safe_dump(normalized, stream, explicit_start=True, sort_keys=False)
 
 
 def main() -> int:
@@ -250,11 +292,18 @@ def main() -> int:
         )
         return 1
 
-    merged = merge_file_contents(fix_files, args.repository)
+    documents = collect_filtered_documents(fix_files, args.repository)
+    merged = dump_documents(documents)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(merged, encoding="utf-8")
 
     print(f"Wrote {output} from {len(fix_files)} clang-tidy YAML files.")
+
+    if args.fixes_dir is not None:
+        fixes_dir = args.fixes_dir.resolve()
+        write_fixes_dir(documents, fixes_dir, str(workspace_root))
+        print(f"Wrote {len(documents)} apply-ready fix files to {fixes_dir}.")
+
     return 0
 
 
