@@ -65,9 +65,10 @@ To run the format fix script under Docker:
 ./ci/run_envoy_docker.sh './ci/do_ci.sh format'
 ```
 
-To run clang-tidy under Docker, run the following (this creates a full
-compilation db and takes a long time):
+To run clang-tidy under Docker, run the following (this runs clang-tidy over the
+whole tree via the Bazel aspect and takes a long time; pass Bazel targets to
+narrow it, e.g. `//source/common/buffer/...`):
 
 ```console
-./ci/run_envoy_docker.sh ci/do_ci.sh clang_tidy
+./ci/run_envoy_docker.sh './ci/do_ci.sh clang-tidy'
 ```

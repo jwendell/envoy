@@ -34,6 +34,17 @@ def parse_args() -> argparse.Namespace:
         help="Bazel repository name for the current workspace, for example 'envoy'.",
     )
     parser.add_argument(
+        "--fixes-dir",
+        type=Path,
+        help=(
+            "Optional directory to write apply-ready fixes into: one "
+            "clang-apply-replacements YAML file per translation unit, with "
+            "each diagnostic's BuildDirectory rewritten to the workspace root "
+            "so relative FilePaths resolve. Consumed by "
+            "`clang-apply-replacements <fixes-dir>`."
+        ),
+    )
+    parser.add_argument(
         "targets",
         nargs="+",
         help=(
@@ -209,7 +220,9 @@ def filter_document_diagnostics(document: dict, repository_name: str | None) -> 
     return filtered_document
 
 
-def merge_file_contents(fix_files: list[Path], repository_name: str | None) -> str:
+def collect_filtered_documents(
+    fix_files: list[Path], repository_name: str | None
+) -> list[dict]:
     merged_documents = []
     for fix_file in fix_files:
         with fix_file.open(encoding="utf-8") as stream:
@@ -220,10 +233,59 @@ def merge_file_contents(fix_files: list[Path], repository_name: str | None) -> s
                 if filtered_document is not None:
                     merged_documents.append(filtered_document)
 
-    if not merged_documents:
+    return merged_documents
+
+
+def dump_documents(documents: list[dict]) -> str:
+    if not documents:
         return ""
 
-    return yaml.safe_dump_all(merged_documents, explicit_start=True, sort_keys=False)
+    return yaml.safe_dump_all(documents, explicit_start=True, sort_keys=False)
+
+
+def rebase_exec_path(path: str, workspace_root: str) -> str:
+    # clang-tidy running under RBE records absolute paths rooted at the remote
+    # executor's exec directory, e.g.
+    #   /mnt/engflow/worker/work/3/exec/source/common/foo.cc
+    # Those paths do not exist where fixes are applied (the check container), so
+    # clang-apply-replacements skips them ("Described file ... doesn't exist.
+    # Ignoring..."). Rebase anything under an `/exec/` root onto the local
+    # workspace so the fix resolves. Paths that already resolve locally (relative
+    # paths, or local execroot symlinks under `/execroot/`) contain no `/exec/`
+    # segment and are left untouched.
+    match = re.search(r"/exec/(.+)$", path)
+    if match:
+        return os.path.join(workspace_root, match.group(1))
+    return path
+
+
+def normalize_document(obj, workspace_root: str):
+    # Recursively rebase every recorded path (MainSourceFile and each FilePath,
+    # including those nested under Diagnostics/Notes/Replacements) from the RBE
+    # exec root onto the local workspace, and point BuildDirectory at the
+    # workspace root so any remaining relative FilePaths also resolve.
+    if isinstance(obj, dict):
+        normalized = {}
+        for key, value in obj.items():
+            if key in ("FilePath", "MainSourceFile") and isinstance(value, str):
+                normalized[key] = rebase_exec_path(value, workspace_root)
+            elif key == "BuildDirectory":
+                normalized[key] = workspace_root
+            else:
+                normalized[key] = normalize_document(value, workspace_root)
+        return normalized
+    if isinstance(obj, list):
+        return [normalize_document(item, workspace_root) for item in obj]
+    return obj
+
+
+def write_fixes_dir(documents: list[dict], fixes_dir: Path, workspace_root: str) -> None:
+    fixes_dir.mkdir(parents=True, exist_ok=True)
+    for index, document in enumerate(documents):
+        normalized = normalize_document(document, workspace_root)
+        fix_path = fixes_dir / f"{index:04d}.yaml"
+        with fix_path.open("w", encoding="utf-8") as stream:
+            yaml.safe_dump(normalized, stream, explicit_start=True, sort_keys=False)
 
 
 def main() -> int:
@@ -250,11 +312,18 @@ def main() -> int:
         )
         return 1
 
-    merged = merge_file_contents(fix_files, args.repository)
+    documents = collect_filtered_documents(fix_files, args.repository)
+    merged = dump_documents(documents)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(merged, encoding="utf-8")
 
     print(f"Wrote {output} from {len(fix_files)} clang-tidy YAML files.")
+
+    if args.fixes_dir is not None:
+        fixes_dir = args.fixes_dir.resolve()
+        write_fixes_dir(documents, fixes_dir, str(workspace_root))
+        print(f"Wrote {len(documents)} apply-ready fix files to {fixes_dir}.")
+
     return 0
 
 

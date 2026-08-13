@@ -36,6 +36,7 @@ checks:
     - check-build
     - check-build-openssl
     - check-build-openssl-presubmit
+    - check-clang-tidy
     - check-coverage
     - check-runtime
     - check-san
@@ -196,6 +197,9 @@ run:
     - bazel/**/*
     - .bazelrc
     - ci/do_ci.sh
+  check-clang-tidy:
+    paths:
+    - "**/*"
   check-coverage:
     paths:
     - "**/*"
